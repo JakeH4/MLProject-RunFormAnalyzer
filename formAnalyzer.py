@@ -130,6 +130,8 @@ recording_file = None
 recording_writer = None
 recording_started_at = None
 recording_row_count = 0
+recording_ready_count = 0
+recording_contact_count = 0
 
 # Cadence detection state. `ankle_history` is a rolling window of
 # (time, ankle_y) tuples; `contact_times` holds the timestamps of detected
@@ -164,13 +166,16 @@ def try_snapshot(image, ready_now):
 
 def start_recording():
     """Open a fresh CSV, write the header row, and arm recording state."""
-    global recording_file, recording_writer, recording_started_at, recording_row_count
+    global recording_file, recording_writer, recording_started_at
+    global recording_row_count, recording_ready_count, recording_contact_count
     path = os.path.join(RECORDING_DIR, f"session_{int(time.time())}.csv")
     recording_file = open(path, "w", newline="")
     recording_writer = csv.writer(recording_file)
     recording_writer.writerow(CSV_COLUMNS)
     recording_started_at = time.time()
     recording_row_count = 0
+    recording_ready_count = 0
+    recording_contact_count = 0
     print(f"Recording started: {path}")
     show_status(f"Recording: {os.path.basename(path)}", (0, 200, 255))
 
@@ -184,8 +189,15 @@ def stop_recording():
     recording_file = None
     recording_writer = None
     recording_started_at = None
-    print(f"Recording stopped: {path} ({recording_row_count} rows)")
-    show_status(f"Saved {recording_row_count} rows", (0, 255, 0))
+    print(
+        f"Recording stopped: {path} "
+        f"({recording_row_count} rows, {recording_ready_count} ready, "
+        f"{recording_contact_count} contacts)"
+    )
+    show_status(
+        f"Saved {recording_row_count} rows, {recording_contact_count} contacts",
+        (0, 255, 0),
+    )
 
 frame_index = 0
 while True:
@@ -327,6 +339,8 @@ while True:
                     and now - last_contact_time > MIN_CONTACT_INTERVAL):
                 contact_times.append(mid_t)
                 last_contact_time = now
+                if recording_file is not None:
+                    recording_contact_count += 1
 
         # Drop contacts older than our averaging window.
         while contact_times and now - contact_times[0] > CADENCE_WINDOW_SECONDS:
@@ -353,6 +367,8 @@ while True:
 
         # If a recording session is active, append this frame's features.
         if recording_writer is not None:
+            if ready:
+                recording_ready_count += 1
             elapsed_ms = int((time.time() - recording_started_at) * 1000)
             recording_writer.writerow([
                 frame_index,
@@ -382,14 +398,24 @@ while True:
         thickness=12,
     )
 
-    # REC indicator — bright red text with elapsed time and row count so
-    # you always know if a recording is running.
+    # REC indicator — bright red text with elapsed time, row count, and
+    # quality signals so you can tell from across the room whether the
+    # session is actually capturing useful frames.
     if recording_file is not None:
         elapsed_s = time.time() - recording_started_at
-        rec_text = f"REC  {elapsed_s:5.1f}s  {recording_row_count} rows"
+        rec_text = f"REC  {elapsed_s:5.1f}s  rows={recording_row_count}"
         cv2.putText(
             frame_bgr, rec_text, (20, 144),
             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2, cv2.LINE_AA,
+        )
+        pct = (100 * recording_ready_count / recording_row_count) if recording_row_count else 0
+        stats_text = (
+            f"ready={recording_ready_count} ({pct:.0f}%)   "
+            f"contacts={recording_contact_count}"
+        )
+        cv2.putText(
+            frame_bgr, stats_text, (20, 174),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2, cv2.LINE_AA,
         )
 
     # Top-right "Tracking: X Leg" indicator. Right-align by measuring the
