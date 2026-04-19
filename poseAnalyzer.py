@@ -31,8 +31,9 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 SNAPSHOT_DIR = os.path.join(_HERE, "snapshots")
 RECORDING_DIR = os.path.join(_HERE, "recordings")
 CSV_COLUMNS = [
-    "frame_index", "elapsed_ms", "tracking_side", "knee_angle",
-    "vis_hip", "vis_knee", "vis_ankle", "ready",
+    "frame_index", "elapsed_ms", "tracking_side",
+    "knee_angle", "trunk_lean", "foot_offset",
+    "vis_hip", "vis_knee", "vis_ankle", "vis_shoulder", "ready",
 ]
 
 
@@ -61,6 +62,9 @@ LEG_SIDES = {
     "right": (24, 26, 28),
     "left": (23, 25, 27),
 }
+# Shoulder and hip indices used to compute torso-based features.
+LEFT_SHOULDER, RIGHT_SHOULDER = 11, 12
+LEFT_HIP_IDX, RIGHT_HIP_IDX = 23, 24
 
 # Minimum MediaPipe `visibility` score required on hip, knee, and ankle for us
 # to trust the angle. Below this we show a warning instead of a number.
@@ -240,6 +244,42 @@ while True:
                 cv2.LINE_AA,
             )
 
+        # Torso midpoints for trunk-lean and normalization.
+        l_sh, r_sh = person[LEFT_SHOULDER], person[RIGHT_SHOULDER]
+        l_hp, r_hp = person[LEFT_HIP_IDX], person[RIGHT_HIP_IDX]
+        shoulder_mid = ((l_sh.x + r_sh.x) / 2, (l_sh.y + r_sh.y) / 2)
+        hip_mid = ((l_hp.x + r_hp.x) / 2, (l_hp.y + r_hp.y) / 2)
+        vis_shoulder = min(l_sh.visibility, r_sh.visibility)
+
+        # Trunk lean: angle (degrees) of the hip->shoulder vector from
+        # vertical. 0 = upright, positive = tilted in either direction.
+        # atan2(|dx|, -dy) because image y grows downward, so "up" is -dy.
+        dx_t = shoulder_mid[0] - hip_mid[0]
+        dy_t = shoulder_mid[1] - hip_mid[1]
+        torso_len = math.hypot(dx_t, dy_t)
+        trunk_lean = (
+            math.degrees(math.atan2(abs(dx_t), -dy_t)) if torso_len > 1e-6 else None
+        )
+
+        # Foot offset: signed horizontal distance from hip to ankle,
+        # normalized by torso length so the number doesn't change with
+        # camera distance. Positive = ankle in front of hip in image
+        # coords; negative = behind.
+        foot_offset = (ankle[0] - hip[0]) / torso_len if torso_len > 1e-6 else None
+
+        # Secondary on-screen line: trunk + foot offset.
+        if trunk_lean is not None and foot_offset is not None:
+            cv2.putText(
+                frame_bgr,
+                f"Trunk: {trunk_lean:4.1f} deg   Foot: {foot_offset:+.2f}",
+                (20, 82),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (200, 255, 200),
+                2,
+                cv2.LINE_AA,
+            )
+
         # If a recording session is active, append this frame's features.
         if recording_writer is not None:
             elapsed_ms = int((time.time() - recording_started_at) * 1000)
@@ -248,9 +288,12 @@ while True:
                 elapsed_ms,
                 tracking_side,
                 f"{knee_angle:.2f}" if knee_angle is not None else "",
+                f"{trunk_lean:.2f}" if trunk_lean is not None else "",
+                f"{foot_offset:.3f}" if foot_offset is not None else "",
                 f"{vis_hip:.3f}",
                 f"{vis_knee:.3f}",
                 f"{vis_ankle:.3f}",
+                f"{vis_shoulder:.3f}",
                 1 if ready else 0,
             ])
             recording_row_count += 1
@@ -272,7 +315,7 @@ while True:
         elapsed_s = time.time() - recording_started_at
         rec_text = f"REC  {elapsed_s:5.1f}s  {recording_row_count} rows"
         cv2.putText(
-            frame_bgr, rec_text, (20, 88),
+            frame_bgr, rec_text, (20, 115),
             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2, cv2.LINE_AA,
         )
 
