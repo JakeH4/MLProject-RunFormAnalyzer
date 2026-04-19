@@ -17,6 +17,7 @@ import csv
 import math
 import os
 import time
+from collections import deque
 import cv2
 import mediapipe as mp
 from mediapipe.tasks import python as mp_python
@@ -32,9 +33,14 @@ SNAPSHOT_DIR = os.path.join(_HERE, "snapshots")
 RECORDING_DIR = os.path.join(_HERE, "recordings")
 CSV_COLUMNS = [
     "frame_index", "elapsed_ms", "tracking_side",
-    "knee_angle", "trunk_lean", "foot_offset",
+    "knee_angle", "trunk_lean", "foot_offset", "cadence_spm",
     "vis_hip", "vis_knee", "vis_ankle", "vis_shoulder", "ready",
 ]
+
+# Cadence detection tuning.
+ANKLE_HISTORY_SECONDS = 1.5   # how far back to keep ankle-y samples
+CADENCE_WINDOW_SECONDS = 6.0  # recent window for smoothing cadence
+MIN_CONTACT_INTERVAL = 0.25   # refractory: no two contacts within this time
 
 
 def angle_between(a, b, c):
@@ -111,6 +117,13 @@ recording_file = None
 recording_writer = None
 recording_started_at = None
 recording_row_count = 0
+
+# Cadence detection state. `ankle_history` is a rolling window of
+# (time, ankle_y) tuples; `contact_times` holds the timestamps of detected
+# foot contacts (local maxes in ankle_y) within CADENCE_WINDOW_SECONDS.
+ankle_history = deque()
+contact_times = deque()
+last_contact_time = 0.0
 
 # Ephemeral on-screen banner. None or (text, expires_at, color) where color
 # is a BGR tuple. Rendered each frame while time.time() < expires_at.
@@ -280,6 +293,51 @@ while True:
                 cv2.LINE_AA,
             )
 
+        # Cadence detection — look for local maxima in ankle.y over time.
+        cadence_spm = None
+        now = time.time()
+        ankle_history.append((now, ankle[1]))
+        while ankle_history and now - ankle_history[0][0] > ANKLE_HISTORY_SECONDS:
+            ankle_history.popleft()
+
+        # Need at least 7 samples so we can look 3 on either side of a
+        # candidate. Candidate is the sample 3 frames back from the end.
+        if len(ankle_history) >= 7:
+            hist = list(ankle_history)
+            mid = len(hist) - 4
+            mid_t, mid_y = hist[mid]
+            left_max = max(s[1] for s in hist[mid - 3:mid])
+            right_max = max(s[1] for s in hist[mid + 1:mid + 4])
+            # Candidate is a local max if it beats both neighborhoods
+            # AND we haven't just registered one (refractory).
+            if (mid_y > left_max and mid_y > right_max
+                    and now - last_contact_time > MIN_CONTACT_INTERVAL):
+                contact_times.append(mid_t)
+                last_contact_time = now
+
+        # Drop contacts older than our averaging window.
+        while contact_times and now - contact_times[0] > CADENCE_WINDOW_SECONDS:
+            contact_times.popleft()
+
+        # Need 2+ contacts to measure an interval. Multiply by 2 because we
+        # only track one leg, and true cadence counts both feet.
+        if len(contact_times) >= 2:
+            span = contact_times[-1] - contact_times[0]
+            if span > 0:
+                cadence_spm = (len(contact_times) - 1) / span * 60 * 2
+
+        if cadence_spm is not None:
+            cv2.putText(
+                frame_bgr,
+                f"Cadence: {cadence_spm:.0f} spm",
+                (20, 112),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (200, 255, 200),
+                2,
+                cv2.LINE_AA,
+            )
+
         # If a recording session is active, append this frame's features.
         if recording_writer is not None:
             elapsed_ms = int((time.time() - recording_started_at) * 1000)
@@ -290,6 +348,7 @@ while True:
                 f"{knee_angle:.2f}" if knee_angle is not None else "",
                 f"{trunk_lean:.2f}" if trunk_lean is not None else "",
                 f"{foot_offset:.3f}" if foot_offset is not None else "",
+                f"{cadence_spm:.1f}" if cadence_spm is not None else "",
                 f"{vis_hip:.3f}",
                 f"{vis_knee:.3f}",
                 f"{vis_ankle:.3f}",
@@ -315,7 +374,7 @@ while True:
         elapsed_s = time.time() - recording_started_at
         rec_text = f"REC  {elapsed_s:5.1f}s  {recording_row_count} rows"
         cv2.putText(
-            frame_bgr, rec_text, (20, 115),
+            frame_bgr, rec_text, (20, 144),
             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2, cv2.LINE_AA,
         )
 
@@ -383,6 +442,11 @@ while True:
         try_snapshot(frame_bgr, ready)
     if key == ord("l"):
         tracking_side = "left" if tracking_side == "right" else "right"
+        # Reset gait state — the other leg's ankle baseline is different, so
+        # peak detection would be confused for a moment otherwise.
+        ankle_history.clear()
+        contact_times.clear()
+        last_contact_time = 0.0
         show_status(f"Now tracking: {tracking_side.capitalize()} Leg", (255, 255, 0))
     if key == ord("r"):
         if recording_file is None:
