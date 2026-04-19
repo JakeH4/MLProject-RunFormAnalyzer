@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+
+# Personal snapshots from testing — keep out of version control
+snapshots/
+
+# MediaPipe pose model file (large binary; README has the download command)
+models/*.task
