@@ -10,6 +10,7 @@ Controls:
     SPACE  save the current frame immediately
     L      toggle between tracking the right and left leg
     R      start/stop recording a session CSV in recordings/
+    V      toggle video capture — next R recording also writes an .mp4
     1-3    select label for the next recording (good / overstride / excessive_lean)
     Q      quit
 """
@@ -133,6 +134,12 @@ recording_row_count = 0
 recording_ready_count = 0
 recording_contact_count = 0
 
+# Optional video capture alongside the CSV. Toggle with V. When True, the
+# next R recording also writes an .mp4 with all overlays baked in.
+capture_video = False
+video_writer = None
+VIDEO_FPS = 20  # observed rate; minor drift is fine for demo playback
+
 # Cadence detection state. `ankle_history` is a rolling window of
 # (time, ankle_y) tuples; `contact_times` holds the timestamps of detected
 # foot contacts (local maxes in ankle_y) within CADENCE_WINDOW_SECONDS.
@@ -165,23 +172,35 @@ def try_snapshot(image, ready_now):
         show_status("Snapshot failed: pose not ready", (0, 0, 255))
 
 def start_recording():
-    """Open a fresh CSV, write the header row, and arm recording state."""
-    global recording_file, recording_writer, recording_started_at
+    """Open a fresh CSV (and optionally an .mp4), write the header row,
+    and arm recording state."""
+    global recording_file, recording_writer, recording_started_at, video_writer
     global recording_row_count, recording_ready_count, recording_contact_count
-    path = os.path.join(RECORDING_DIR, f"session_{int(time.time())}.csv")
-    recording_file = open(path, "w", newline="")
+    stem = f"session_{int(time.time())}"
+    csv_path = os.path.join(RECORDING_DIR, f"{stem}.csv")
+    recording_file = open(csv_path, "w", newline="")
     recording_writer = csv.writer(recording_file)
     recording_writer.writerow(CSV_COLUMNS)
     recording_started_at = time.time()
     recording_row_count = 0
     recording_ready_count = 0
     recording_contact_count = 0
-    print(f"Recording started: {path}")
-    show_status(f"Recording: {os.path.basename(path)}", (0, 200, 255))
+    print(f"Recording started: {csv_path}")
+    if capture_video:
+        # Query the webcam for its current frame size; OpenCV's VideoWriter
+        # needs an exact (w, h) at construction time or the file ends up
+        # zero bytes.
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        mp4_path = os.path.join(RECORDING_DIR, f"{stem}.mp4")
+        video_writer = cv2.VideoWriter(mp4_path, fourcc, VIDEO_FPS, (w, h))
+        print(f"Video capture: {mp4_path}")
+    show_status(f"Recording: {stem}", (0, 200, 255))
 
 def stop_recording():
-    """Flush and close the CSV, then tell the user how many rows landed."""
-    global recording_file, recording_writer, recording_started_at
+    """Flush and close the CSV (and .mp4), then tell the user how many rows landed."""
+    global recording_file, recording_writer, recording_started_at, video_writer
     if recording_file is None:
         return
     path = recording_file.name
@@ -189,6 +208,9 @@ def stop_recording():
     recording_file = None
     recording_writer = None
     recording_started_at = None
+    if video_writer is not None:
+        video_writer.release()
+        video_writer = None
     print(
         f"Recording stopped: {path} "
         f"({recording_row_count} rows, {recording_ready_count} ready, "
@@ -445,6 +467,19 @@ while True:
         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 255, 200), 2, cv2.LINE_AA,
     )
 
+    # Third top-right line: video-capture flag. Only shown when on, to
+    # keep the corner uncluttered in the default case.
+    if capture_video:
+        vtext = "Video capture: ON"
+        (vw, vh), _ = cv2.getTextSize(
+            vtext, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2,
+        )
+        cv2.putText(
+            frame_bgr, vtext,
+            (frame_bgr.shape[1] - vw - margin, ty + lbl_h + vh + 22),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2, cv2.LINE_AA,
+        )
+
     # If a countdown is running, overlay the remaining seconds; when it hits
     # zero, save this frame (overlays and all) and clear the countdown.
     if countdown_until is not None:
@@ -481,8 +516,13 @@ while True:
         else:
             status_message = None
 
+    # Write the fully-decorated frame to the video file if one is open.
+    # Done right before imshow so the user sees exactly what's saved.
+    if video_writer is not None:
+        video_writer.write(frame_bgr)
+
     cv2.imshow(
-        "Pose analyzer (T=snap, SPACE=snap now, L=swap leg, R=record, 1-3=label, Q=quit)",
+        "Form analyzer (T=snap SPACE=snap L=swap R=rec V=video 1-3=label Q=quit)",
         frame_bgr,
     )
     key = cv2.waitKey(1) & 0xFF
@@ -508,6 +548,17 @@ while True:
     if key in LABELS:
         current_label = LABELS[key]
         show_status(f"Label: {current_label}", (200, 255, 200))
+    if key == ord("v"):
+        # Block toggling in the middle of an active recording, or the
+        # .csv and .mp4 would get mismatched row/frame counts.
+        if recording_file is not None:
+            show_status("Stop recording first to toggle video", (0, 0, 255))
+        else:
+            capture_video = not capture_video
+            show_status(
+                f"Video capture: {'ON' if capture_video else 'OFF'}",
+                (0, 165, 255) if capture_video else (200, 200, 200),
+            )
 
 
 # --- 4. Clean up --------------------------------------------------------------
