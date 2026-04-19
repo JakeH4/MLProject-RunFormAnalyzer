@@ -1,8 +1,14 @@
 """
-Phase 1 — step 1: minimal pose demo.
+Phase 1 — pose demo.
 
-Open the webcam, run MediaPipe's pose model on each frame,
-draw the skeleton, show it in a window. Press 'q' to quit.
+Opens the webcam, runs MediaPipe's pose model on each frame, computes the
+knee angle on whichever side you're tracking, and lets you capture snapshots.
+
+Controls:
+    T      start a 5-second countdown, then save the frame to snapshots/
+    SPACE  save the current frame immediately
+    L      toggle between tracking the right and left leg
+    Q      quit
 """
 
 import math
@@ -41,9 +47,11 @@ def angle_between(a, b, c):
 
 
 # Landmark indices we care about (MediaPipe's standard numbering).
-RIGHT_HIP = 24
-RIGHT_KNEE = 26
-RIGHT_ANKLE = 28
+# Each leg is a (hip, knee, ankle) triple.
+LEG_SIDES = {
+    "right": (24, 26, 28),
+    "left": (23, 25, 27),
+}
 
 # Minimum MediaPipe `visibility` score required on hip, knee, and ankle for us
 # to trust the angle. Below this we show a warning instead of a number.
@@ -74,6 +82,9 @@ if not cap.isOpened():
 
 # --- 3. Main loop: read frame -> detect pose -> draw -> show ------------------
 os.makedirs(SNAPSHOT_DIR, exist_ok=True)
+
+# Which leg to analyze. Toggled at runtime with the L key.
+tracking_side = "right"
 
 # None = no countdown running. Otherwise, the Unix timestamp at which the
 # countdown should fire and save a frame.
@@ -134,10 +145,14 @@ while True:
             y = int(landmark.y * h)
             cv2.circle(frame_bgr, (x, y), 4, (0, 255, 0), -1)
 
+        # Pick the three landmark indices for whichever leg we're tracking.
+        hip_idx, knee_idx, ankle_idx = LEG_SIDES[tracking_side]
+        side_letter = "R" if tracking_side == "right" else "L"
+
         # Highlight the three landmarks the knee-angle math actually uses.
         # A big red circle + a letter label makes it obvious at a glance
         # whether H/K/A landed on the right body parts.
-        for idx, label in [(RIGHT_HIP, "H"), (RIGHT_KNEE, "K"), (RIGHT_ANKLE, "A")]:
+        for idx, label in [(hip_idx, "H"), (knee_idx, "K"), (ankle_idx, "A")]:
             lm = person[idx]
             px, py = int(lm.x * w), int(lm.y * h)
             cv2.circle(frame_bgr, (px, py), 9, (0, 0, 255), 2)
@@ -147,22 +162,22 @@ while True:
             )
 
         # Pull out hip, knee, ankle as (x, y) pairs and compute the knee angle.
-        hip = (person[RIGHT_HIP].x, person[RIGHT_HIP].y)
-        knee = (person[RIGHT_KNEE].x, person[RIGHT_KNEE].y)
-        ankle = (person[RIGHT_ANKLE].x, person[RIGHT_ANKLE].y)
+        hip = (person[hip_idx].x, person[hip_idx].y)
+        knee = (person[knee_idx].x, person[knee_idx].y)
+        ankle = (person[ankle_idx].x, person[ankle_idx].y)
         knee_angle = angle_between(hip, knee, ankle)
 
         # MediaPipe's own confidence that each landmark is actually visible.
-        vis_hip = person[RIGHT_HIP].visibility
-        vis_knee = person[RIGHT_KNEE].visibility
-        vis_ankle = person[RIGHT_ANKLE].visibility
+        vis_hip = person[hip_idx].visibility
+        vis_knee = person[knee_idx].visibility
+        vis_ankle = person[ankle_idx].visibility
         trustworthy = min(vis_hip, vis_knee, vis_ankle) >= MIN_VISIBILITY
         ready = trustworthy and knee_angle is not None
 
         if ready:
             cv2.putText(
                 frame_bgr,
-                f"R knee: {knee_angle:5.1f} deg",
+                f"{side_letter} knee: {knee_angle:5.1f} deg",
                 (20, 50),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.9,
@@ -191,6 +206,21 @@ while True:
         (frame_bgr.shape[1] - 1, frame_bgr.shape[0] - 1),
         border_color,
         thickness=12,
+    )
+
+    # Top-right "Tracking: X Leg" indicator. Right-align by measuring the
+    # text width with getTextSize, then placing its left edge at
+    # frame_width - text_width - margin.
+    tracking_label = f"Tracking: {tracking_side.capitalize()} Leg"
+    (tl_w, tl_h), _ = cv2.getTextSize(
+        tracking_label, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2,
+    )
+    margin = 20
+    tx = frame_bgr.shape[1] - tl_w - margin
+    ty = margin + tl_h
+    cv2.putText(
+        frame_bgr, tracking_label, (tx, ty),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2, cv2.LINE_AA,
     )
 
     # If a countdown is running, overlay the remaining seconds; when it hits
@@ -229,7 +259,7 @@ while True:
         else:
             status_message = None
 
-    cv2.imshow("Pose demo (T=timed snap, SPACE=snap now, Q=quit)", frame_bgr)
+    cv2.imshow("Pose demo (T=timed snap, SPACE=snap now, L=switch leg, Q=quit)", frame_bgr)
     key = cv2.waitKey(1) & 0xFF
     if key == ord("q"):
         break
@@ -237,6 +267,9 @@ while True:
         countdown_until = time.time() + COUNTDOWN_SECONDS
     if key == ord(" "):
         try_snapshot(frame_bgr, ready)
+    if key == ord("l"):
+        tracking_side = "left" if tracking_side == "right" else "right"
+        show_status(f"Now tracking: {tracking_side.capitalize()} Leg", (255, 255, 0))
 
 
 # --- 4. Clean up --------------------------------------------------------------
