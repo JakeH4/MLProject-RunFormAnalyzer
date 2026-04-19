@@ -30,7 +30,7 @@ curl -L -o models/pose_landmarker_lite.task \
 ## Usage
 
 ```bash
-python3 pose_demo.py
+python3 poseAnalyzer.py
 ```
 
 Controls:
