@@ -10,6 +10,7 @@ Controls:
     SPACE  save the current frame immediately
     L      toggle between tracking the right and left leg
     R      start/stop recording a session CSV in recordings/
+    1-3    select label for the next recording (good / overstride / excessive_lean)
     Q      quit
 """
 
@@ -34,13 +35,22 @@ RECORDING_DIR = os.path.join(_HERE, "recordings")
 CSV_COLUMNS = [
     "frame_index", "elapsed_ms", "tracking_side",
     "knee_angle", "trunk_lean", "foot_offset", "cadence_spm",
-    "vis_hip", "vis_knee", "vis_ankle", "vis_shoulder", "ready",
+    "vis_hip", "vis_knee", "vis_ankle", "vis_shoulder", "ready", "label",
 ]
 
 # Cadence detection tuning.
 ANKLE_HISTORY_SECONDS = 1.5   # how far back to keep ankle-y samples
 CADENCE_WINDOW_SECONDS = 6.0  # recent window for smoothing cadence
 MIN_CONTACT_INTERVAL = 0.25   # refractory: no two contacts within this time
+
+# Session-label shortcuts. Press the digit key during the live demo to change
+# which label the next recording will stamp onto every row. Extend this dict
+# as you collect more form categories.
+LABELS = {
+    ord("1"): "good",
+    ord("2"): "overstride",
+    ord("3"): "excessive_lean",
+}
 
 
 def angle_between(a, b, c):
@@ -105,6 +115,9 @@ os.makedirs(RECORDING_DIR, exist_ok=True)
 
 # Which leg to analyze. Toggled at runtime with the L key.
 tracking_side = "right"
+
+# Label written into every row of the next recording. Change with 1-3.
+current_label = "good"
 
 # None = no countdown running. Otherwise, the Unix timestamp at which the
 # countdown should fire and save a frame.
@@ -354,6 +367,7 @@ while True:
                 f"{vis_ankle:.3f}",
                 f"{vis_shoulder:.3f}",
                 1 if ready else 0,
+                current_label,
             ])
             recording_row_count += 1
 
@@ -393,6 +407,18 @@ while True:
         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2, cv2.LINE_AA,
     )
 
+    # Second top-right line: the label that will be stamped on rows of the
+    # next recording. Right-aligned the same way.
+    label_text = f"Label: {current_label}"
+    (lbl_w, lbl_h), _ = cv2.getTextSize(
+        label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2,
+    )
+    cv2.putText(
+        frame_bgr, label_text,
+        (frame_bgr.shape[1] - lbl_w - margin, ty + lbl_h + 10),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 255, 200), 2, cv2.LINE_AA,
+    )
+
     # If a countdown is running, overlay the remaining seconds; when it hits
     # zero, save this frame (overlays and all) and clear the countdown.
     if countdown_until is not None:
@@ -430,7 +456,7 @@ while True:
             status_message = None
 
     cv2.imshow(
-        "Pose analyzer (T=timed snap, SPACE=snap, L=switch leg, R=record, Q=quit)",
+        "Pose analyzer (T=snap, SPACE=snap now, L=swap leg, R=record, 1-3=label, Q=quit)",
         frame_bgr,
     )
     key = cv2.waitKey(1) & 0xFF
@@ -453,6 +479,9 @@ while True:
             start_recording()
         else:
             stop_recording()
+    if key in LABELS:
+        current_label = LABELS[key]
+        show_status(f"Label: {current_label}", (200, 255, 200))
 
 
 # --- 4. Clean up --------------------------------------------------------------
