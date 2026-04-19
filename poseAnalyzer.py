@@ -1,16 +1,19 @@
 """
-Phase 1 — pose demo.
+Pose analyzer — Phase 1 snapshots + Phase 2 CSV recording.
 
 Opens the webcam, runs MediaPipe's pose model on each frame, computes the
-knee angle on whichever side you're tracking, and lets you capture snapshots.
+knee angle on whichever side you're tracking, and either saves one-off
+snapshots or streams per-frame features to a CSV for later ML use.
 
 Controls:
     T      start a 5-second countdown, then save the frame to snapshots/
     SPACE  save the current frame immediately
     L      toggle between tracking the right and left leg
+    R      start/stop recording a session CSV in recordings/
     Q      quit
 """
 
+import csv
 import math
 import os
 import time
@@ -22,9 +25,15 @@ from mediapipe.tasks.python import vision as mp_vision
 
 # Seconds the T-key countdown waits before firing.
 COUNTDOWN_SECONDS = 5.0
-# Folder where snapshots get saved. Anchored to this file so it lands in the
-# project directory no matter where you launch python3 from.
-SNAPSHOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "snapshots")
+# Folders where snapshots and recordings land. Anchored to this file so they
+# sit in the project directory no matter where you launch python3 from.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+SNAPSHOT_DIR = os.path.join(_HERE, "snapshots")
+RECORDING_DIR = os.path.join(_HERE, "recordings")
+CSV_COLUMNS = [
+    "frame_index", "elapsed_ms", "tracking_side", "knee_angle",
+    "vis_hip", "vis_knee", "vis_ankle", "ready",
+]
 
 
 def angle_between(a, b, c):
@@ -82,6 +91,7 @@ if not cap.isOpened():
 
 # --- 3. Main loop: read frame -> detect pose -> draw -> show ------------------
 os.makedirs(SNAPSHOT_DIR, exist_ok=True)
+os.makedirs(RECORDING_DIR, exist_ok=True)
 
 # Which leg to analyze. Toggled at runtime with the L key.
 tracking_side = "right"
@@ -89,6 +99,14 @@ tracking_side = "right"
 # None = no countdown running. Otherwise, the Unix timestamp at which the
 # countdown should fire and save a frame.
 countdown_until = None
+
+# Recording state. While a session is active, `recording_file` holds an open
+# CSV file handle, `recording_writer` a csv.writer bound to it, and we track
+# when it started (for elapsed_ms) and how many rows we've written so far.
+recording_file = None
+recording_writer = None
+recording_started_at = None
+recording_row_count = 0
 
 # Ephemeral on-screen banner. None or (text, expires_at, color) where color
 # is a BGR tuple. Rendered each frame while time.time() < expires_at.
@@ -113,6 +131,31 @@ def try_snapshot(image, ready_now):
         save_snapshot(image)
     else:
         show_status("Snapshot failed: pose not ready", (0, 0, 255))
+
+def start_recording():
+    """Open a fresh CSV, write the header row, and arm recording state."""
+    global recording_file, recording_writer, recording_started_at, recording_row_count
+    path = os.path.join(RECORDING_DIR, f"session_{int(time.time())}.csv")
+    recording_file = open(path, "w", newline="")
+    recording_writer = csv.writer(recording_file)
+    recording_writer.writerow(CSV_COLUMNS)
+    recording_started_at = time.time()
+    recording_row_count = 0
+    print(f"Recording started: {path}")
+    show_status(f"Recording: {os.path.basename(path)}", (0, 200, 255))
+
+def stop_recording():
+    """Flush and close the CSV, then tell the user how many rows landed."""
+    global recording_file, recording_writer, recording_started_at
+    if recording_file is None:
+        return
+    path = recording_file.name
+    recording_file.close()
+    recording_file = None
+    recording_writer = None
+    recording_started_at = None
+    print(f"Recording stopped: {path} ({recording_row_count} rows)")
+    show_status(f"Saved {recording_row_count} rows", (0, 255, 0))
 
 frame_index = 0
 while True:
@@ -197,6 +240,21 @@ while True:
                 cv2.LINE_AA,
             )
 
+        # If a recording session is active, append this frame's features.
+        if recording_writer is not None:
+            elapsed_ms = int((time.time() - recording_started_at) * 1000)
+            recording_writer.writerow([
+                frame_index,
+                elapsed_ms,
+                tracking_side,
+                f"{knee_angle:.2f}" if knee_angle is not None else "",
+                f"{vis_hip:.3f}",
+                f"{vis_knee:.3f}",
+                f"{vis_ankle:.3f}",
+                1 if ready else 0,
+            ])
+            recording_row_count += 1
+
     # Readiness border: green if the three key landmarks are confident,
     # red otherwise. Drawn as a thick rectangle hugging the frame edges.
     border_color = (0, 255, 0) if ready else (0, 0, 255)
@@ -207,6 +265,16 @@ while True:
         border_color,
         thickness=12,
     )
+
+    # REC indicator — bright red text with elapsed time and row count so
+    # you always know if a recording is running.
+    if recording_file is not None:
+        elapsed_s = time.time() - recording_started_at
+        rec_text = f"REC  {elapsed_s:5.1f}s  {recording_row_count} rows"
+        cv2.putText(
+            frame_bgr, rec_text, (20, 88),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2, cv2.LINE_AA,
+        )
 
     # Top-right "Tracking: X Leg" indicator. Right-align by measuring the
     # text width with getTextSize, then placing its left edge at
@@ -259,7 +327,10 @@ while True:
         else:
             status_message = None
 
-    cv2.imshow("Pose demo (T=timed snap, SPACE=snap now, L=switch leg, Q=quit)", frame_bgr)
+    cv2.imshow(
+        "Pose analyzer (T=timed snap, SPACE=snap, L=switch leg, R=record, Q=quit)",
+        frame_bgr,
+    )
     key = cv2.waitKey(1) & 0xFF
     if key == ord("q"):
         break
@@ -270,9 +341,17 @@ while True:
     if key == ord("l"):
         tracking_side = "left" if tracking_side == "right" else "right"
         show_status(f"Now tracking: {tracking_side.capitalize()} Leg", (255, 255, 0))
+    if key == ord("r"):
+        if recording_file is None:
+            start_recording()
+        else:
+            stop_recording()
 
 
 # --- 4. Clean up --------------------------------------------------------------
+# Close an in-progress CSV cleanly before tearing down, otherwise you'd lose
+# buffered rows on exit.
+stop_recording()
 cap.release()
 cv2.destroyAllWindows()
 landmarker.close()

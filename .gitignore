@@ -16,5 +16,8 @@ env/
 # Personal snapshots from testing — keep out of version control
 snapshots/
 
+# Recorded CSV sessions — personal data, also kept local
+recordings/
+
 # MediaPipe pose model file (large binary; README has the download command)
 models/*.task
