@@ -36,6 +36,10 @@ RECORDING_DIR = os.path.join(_HERE, "recordings")
 CSV_COLUMNS = [
     "frame_index", "elapsed_ms", "tracking_side",
     "knee_angle", "trunk_lean", "foot_offset", "cadence_spm",
+    # Raw normalized coordinates (0..1) of the tracked leg's landmarks.
+    # Needed for Phase 6: post-hoc foot-contact detection from ankle_y peaks
+    # and contact-aligned features like foot_offset_at_contact.
+    "hip_x", "hip_y", "knee_x", "knee_y", "ankle_x", "ankle_y",
     "vis_hip", "vis_knee", "vis_ankle", "vis_shoulder", "ready", "label",
 ]
 
@@ -400,6 +404,9 @@ while True:
                 f"{trunk_lean:.2f}" if trunk_lean is not None else "",
                 f"{foot_offset:.3f}" if foot_offset is not None else "",
                 f"{cadence_spm:.1f}" if cadence_spm is not None else "",
+                f"{hip[0]:.4f}", f"{hip[1]:.4f}",
+                f"{knee[0]:.4f}", f"{knee[1]:.4f}",
+                f"{ankle[0]:.4f}", f"{ankle[1]:.4f}",
                 f"{vis_hip:.3f}",
                 f"{vis_knee:.3f}",
                 f"{vis_ankle:.3f}",
