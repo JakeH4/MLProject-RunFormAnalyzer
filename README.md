@@ -110,6 +110,35 @@ The `foot_offset` feature is averaged across the whole gait cycle. Because the f
 2. Aggregating features across an entire signal cycle can destroy the very phase-specific information that distinguishes the classes you care about.
 3. Which class a model can learn says something about the physical signal, not the model — `excessive_lean` works because trunk posture is relatively stationary; `overstride` doesn't because the relevant information is transient and lost in the mean.
 
+## Phase 6 experiments
+
+Phase 5 identified two plausible fixes for the good/overstride confusion. Both were tried on a fresh dataset of six outdoor sessions (two per label, two camera positions) recorded with an expanded CSV schema that included raw `hip_x`, `knee_x`, `ankle_x`, `hip_y`, `knee_y`, `ankle_y` coordinates so contact events could be detected post-hoc.
+
+**The three experiments (all with leave-one-session-out CV on the same data):**
+
+| Experiment | Samples | Mean accuracy | `good` F1 | `overstride` F1 | `excessive_lean` F1 |
+|---|---|---|---|---|---|
+| Phase 5 per-frame (baseline) | 2,257 frames | **0.470** | **0.510** | **0.432** | 0.503 |
+| Phase 6 per-stride (contact-aligned) | 136 strides | 0.400 | 0.190 | 0.319 | **0.640** |
+| Combined (Option B) | 2,231 frames | 0.362 | 0.224 | 0.384 | 0.521 |
+
+The full per-class F1 comparison, also including Phase 5 on the original (v1) data, is in [`plots/f1_comparison.png`](plots/f1_comparison.png). Confusion matrices for each experiment are in the same folder.
+
+### What actually moved the needle
+
+The biggest single improvement was not from feature engineering — it was from **better data collection**. Phase 5 run on the v1 data yielded overstride F1 = **0.11**. Running the same algorithm on the v2 data (more deliberately exaggerated form, cleaner camera setup, multiple camera positions) yielded overstride F1 = **0.43** — a ~4× improvement with no change to the model or features.
+
+The contact-aligned features in Phase 6 did produce the best per-class F1 for `excessive_lean` (0.64) by capturing the posture at the meaningful moment of ground contact. But because the contact filter discards most of the frame-level samples, the Phase 6 model has an order of magnitude fewer training examples, which hurts the classes that don't benefit as much from the alignment.
+
+The combined model was a natural thing to try — "use both kinds of features, let the forest figure out what to use." It performed worse than Phase 5 alone, because the contact-aligned features correlate with the frame-level features (both are computed from the same underlying motion signal), and adding correlated features increases the model's variance without adding information.
+
+### Phase 6 conclusions
+
+1. **Data quality beats feature engineering** at this scale. A better-collected v2 dataset produced a larger improvement in the weakest class than any of the model/feature changes we tried on top.
+2. **Contact-aligned features are per-sample more informative** for some classes (`excessive_lean`), but the gain is dominated by the sample-count penalty from peak-based filtering. With more sessions per class this tradeoff would likely flip.
+3. **"Combine everything" is not free** — correlated features degrade a small-data random forest rather than help it. The textbook bias-variance tradeoff observed in practice.
+4. The single best configuration for this dataset is the simplest one: Phase 5 per-frame features, v2 data, LOSO CV, ~47% mean accuracy, with `cadence_spm` (0.39) and `trunk_lean` (0.35) carrying most of the signal.
+
 ## Roadmap
 
 - **Phase 1** ✅ Webcam pose estimation with knee-angle measurement.
@@ -117,8 +146,8 @@ The `foot_offset` feature is averaged across the whole gait cycle. Because the f
 - **Phase 3** ✅ Extra features: trunk lean, foot offset, cadence.
 - **Phase 4** ✅ Per-session form labels stamped into each row.
 - **Phase 5** ✅ Baseline random-forest classifier, naive-split vs. LOSO evaluation contrast.
-- **Phase 6** 🚧 Gait-event feature engineering: `foot_offset_at_contact` and `knee_angle_at_contact` derived from ankle-y peak detection, expected to resolve the good/overstride confusion.
-- **Future** — Outdoor running validation on real (not deliberately-exaggerated) form; comparison against a small neural network.
+- **Phase 6** ✅ Gait-event feature engineering + Option B combined model + v2 data collection. Found that improved data collection dominated the feature engineering gains, and that naive feature concatenation can degrade performance.
+- **Future** — More sessions per class (5–10) to stabilize LOSO variance; a proper streaming foot-strike detector for real-time form feedback; comparison against a small neural network.
 
 ## Tech
 
